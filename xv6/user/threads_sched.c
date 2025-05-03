@@ -35,17 +35,30 @@ struct priority_queue_entry {
 struct thread *th = NULL;
 struct release_queue_entry *entry = NULL;
 
+/* Args (global) */
+int current_time = 0;
+int time_quantum = 0;
+struct list_head *run_queue = NULL;
+struct list_head *release_queue = NULL;
+
 /* Helper functions */
 static inline void ERR_EXIT(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     exit(EXIT_FAILURE);
 }
 
+void set_global_args(struct threads_sched_args args) {
+    current_time = args.current_time;
+    time_quantum = args.time_quantum;
+    run_queue = args.run_queue;
+    release_queue = args.release_queue;
+}
+
 int get_waiting_time(struct thread *t, int current_time) {
     return current_time - t->arrival_time;
 }
 
-int get_sleeping_time(struct list_head *release_queue, int current_time) {
+int get_sleeping_time() {
     if (list_empty(release_queue))
         ERR_EXIT("Release queue is empty\n");
     int min_release_time = INT_MAX;
@@ -55,11 +68,13 @@ int get_sleeping_time(struct list_head *release_queue, int current_time) {
 }
  
 /* Scheduling algorithm */
+
 // Default
 #ifdef THREAD_SCHEDULER_DEFAULT
 struct threads_sched_result schedule_default(struct threads_sched_args args) {
+    set_global_args(args);
     struct thread *thread_with_smallest_id = NULL;
-    list_for_each_entry(th, args.run_queue, thread_list) {
+    list_for_each_entry(th, run_queue, thread_list) {
         if (thread_with_smallest_id == NULL || th->ID < thread_with_smallest_id->ID)
             thread_with_smallest_id = th;
     }
@@ -70,7 +85,7 @@ struct threads_sched_result schedule_default(struct threads_sched_args args) {
         r.allocated_time = thread_with_smallest_id->remaining_time;
     }
     else {
-        r.scheduled_thread_list_member = args.run_queue;
+        r.scheduled_thread_list_member = run_queue;
         r.allocated_time = 1;
     }
     return r;
@@ -81,7 +96,7 @@ struct threads_sched_result schedule_default(struct threads_sched_args args) {
 
 // HRRN
 #ifdef THREAD_SCHEDULER_HRRN
-static int __hrrn_thread_cmp(struct thread *a, struct thread *b, int current_time) {
+static int __hrrn_thread_cmp(struct thread *a, struct thread *b) {
     if (a == NULL || b == NULL)
         ERR_EXIT("[HRRN] Compare NULL threads\n");
 
@@ -96,9 +111,10 @@ static int __hrrn_thread_cmp(struct thread *a, struct thread *b, int current_tim
 }
 
 struct threads_sched_result schedule_hrrn(struct threads_sched_args args) {
+    set_global_args(args);
     struct thread *thread_with_hrr = NULL;
-    list_for_each_entry(th, args.run_queue, thread_list) {
-        if (thread_with_hrr == NULL || __hrrn_thread_cmp(th, thread_with_hrr, args.current_time) == 1)
+    list_for_each_entry(th, run_queue, thread_list) {
+        if (thread_with_hrr == NULL || __hrrn_thread_cmp(th, thread_with_hrr) == 1)
             thread_with_hrr = th;
     }
 
@@ -108,8 +124,8 @@ struct threads_sched_result schedule_hrrn(struct threads_sched_args args) {
         r.allocated_time = thread_with_hrr->remaining_time;
     }
     else {
-        r.scheduled_thread_list_member = args.run_queue;
-        r.allocated_time = get_sleeping_time(args.release_queue, args.current_time);
+        r.scheduled_thread_list_member = run_queue;
+        r.allocated_time = get_sleeping_time();
     }
     return r;
 }
@@ -124,11 +140,12 @@ void __rr_priority_queue_add(struct list_head *priority_queue, struct thread *t)
 }
 
 struct threads_sched_result schedule_priority_rr(struct threads_sched_args args) {
+    set_global_args(args);
     struct list_head priority_queue[P_RR_MAX_PRIORITY + 1];
     for (int i = 0; i <= P_RR_MAX_PRIORITY; i++)
         INIT_LIST_HEAD(&priority_queue[i]);
     
-    list_for_each_entry(th, args.run_queue, thread_list) {
+    list_for_each_entry(th, run_queue, thread_list) {
         if (th->priority < 0 || th->priority > P_RR_MAX_PRIORITY)
             ERR_EXIT("[P-RR] Thread priority is out of range\n");
         __rr_priority_queue_add(&priority_queue[th->priority], th);
@@ -141,19 +158,19 @@ struct threads_sched_result schedule_priority_rr(struct threads_sched_args args)
         struct priority_queue_entry *entry = list_entry(priority_queue[i].next, struct priority_queue_entry, thread_list);
         list_del(&entry->thread_list);
         r.scheduled_thread_list_member = &entry->thread->thread_list;
-        if (list_empty(&priority_queue[i]) || entry->thread->remaining_time <= args.time_quantum) {
+        if (list_empty(&priority_queue[i]) || entry->thread->remaining_time <= time_quantum) {
             r.allocated_time = entry->thread->remaining_time;
             free(entry);
         }
         else {
-            r.allocated_time = args.time_quantum;
+            r.allocated_time = time_quantum;
             list_add_tail(&entry->thread_list, &priority_queue[i]);
         }
         return r;
     }
 
     /* No thread in the run_queue */
-    r.scheduled_thread_list_member = args.run_queue;
+    r.scheduled_thread_list_member = run_queue;
     r.allocated_time = 1;
     return r;
 }
@@ -162,7 +179,7 @@ struct threads_sched_result schedule_priority_rr(struct threads_sched_args args)
 /* MP3 Part 2 - Real-Time Scheduling*/
 
 #if defined(THREAD_SCHEDULER_EDF_CBS) || defined(THREAD_SCHEDULER_DM)
-static struct thread *__check_deadline_miss(struct list_head *run_queue, int current_time) {
+static struct thread *__check_deadline_miss() {
     struct thread *thread_missing_deadline = NULL;
     list_for_each_entry(th, run_queue, thread_list) {
         if (th->current_deadline <= current_time && (thread_missing_deadline == NULL || th->ID < thread_missing_deadline->ID))
@@ -185,7 +202,7 @@ static int __dm_thread_cmp(struct thread *a, struct thread *b) {
         return 1;
 }
 
-int __dm_compute_time_to_be_allocated(struct list_head *release_queue, struct thread *t, int current_time) {
+int __dm_compute_time_to_be_allocated(struct thread *t) {
     int time_to_be_allocated = min(t->remaining_time, t->current_deadline - current_time);
     list_for_each_entry(entry, release_queue, thread_list) {
         if (__dm_thread_cmp(entry->thrd, t) == 1)
@@ -195,8 +212,9 @@ int __dm_compute_time_to_be_allocated(struct list_head *release_queue, struct th
 }
 
 struct threads_sched_result schedule_dm(struct threads_sched_args args) {
+    set_global_args(args);
     struct threads_sched_result r;
-    struct thread *thread_missing_deadline = __check_deadline_miss(args.run_queue, args.current_time);
+    struct thread *thread_missing_deadline = __check_deadline_miss();
     if (thread_missing_deadline != NULL) { // first check if there is any thread has missed its current deadline
         list_del(&thread_missing_deadline->thread_list);
         r.scheduled_thread_list_member = &thread_missing_deadline->thread_list;
@@ -204,18 +222,18 @@ struct threads_sched_result schedule_dm(struct threads_sched_args args) {
     }
     else {
         struct thread *thread_with_shortest_deadline = NULL;
-        list_for_each_entry(th, args.run_queue, thread_list) {
+        list_for_each_entry(th, run_queue, thread_list) {
             if (thread_with_shortest_deadline == NULL || __dm_thread_cmp(th, thread_with_shortest_deadline) == 1)
                 thread_with_shortest_deadline = th;
         }
 
         if (thread_with_shortest_deadline != NULL) {
             r.scheduled_thread_list_member = &thread_with_shortest_deadline->thread_list;
-            r.allocated_time = __dm_compute_time_to_be_allocated(args.release_queue, thread_with_shortest_deadline, args.current_time);
+            r.allocated_time = __dm_compute_time_to_be_allocated(thread_with_shortest_deadline);
         }
         else { // handle the case where run queue is empty
-            r.scheduled_thread_list_member = args.run_queue;
-            r.allocated_time = get_sleeping_time(args.release_queue, args.current_time);
+            r.scheduled_thread_list_member = run_queue;
+            r.allocated_time = get_sleeping_time();
             if (r.allocated_time < 0)
                 ERR_EXIT("[DM] Negative sleeping time\n");
         }
@@ -237,13 +255,13 @@ static int __edf_thread_cmp(struct thread *a, struct thread *b) {
         return 1;
 }
 
-static bool __edf_violate_bandwidth(struct thread *t, int current_time) {
+static bool __edf_violate_bandwidth(struct thread *t) {
     if (t == NULL)
         ERR_EXIT("[EDF] Check NULL thread\n");
     return t->cbs.remaining_budget * t->period > t->cbs.budget * (t->current_deadline - current_time);
 }
 
-int __edf_compute_time_to_be_allocated(struct list_head *run_queue, struct list_head *release_queue, struct thread *t, int current_time) {
+int __edf_compute_time_to_be_allocated(struct thread *t) {
     int time_to_be_allocated = min(min(t->cbs.remaining_budget, t->remaining_time), t->current_deadline - current_time);
     list_for_each_entry(th, run_queue, thread_list) {
         if (th->cbs.is_throttled && __edf_thread_cmp(th, t) == 1)
@@ -256,7 +274,7 @@ int __edf_compute_time_to_be_allocated(struct list_head *run_queue, struct list_
     return time_to_be_allocated;
 }
 
-void __edf_select_thread_and_store_result(struct threads_sched_result *r, struct list_head *run_queue, struct list_head *release_queue, int current_time) {
+void __edf_select_thread_and_store_result(struct threads_sched_result *r) {
     struct thread *thread_with_ed = NULL;
     list_for_each_entry(th, run_queue, thread_list) {
         if (!th->cbs.is_throttled && (thread_with_ed == NULL || __edf_thread_cmp(th, thread_with_ed) == 1))
@@ -264,21 +282,21 @@ void __edf_select_thread_and_store_result(struct threads_sched_result *r, struct
     }
 
     if (thread_with_ed != NULL) {
-        if (!thread_with_ed->cbs.is_hard_rt && __edf_violate_bandwidth(thread_with_ed, current_time)) {
+        if (!thread_with_ed->cbs.is_hard_rt && __edf_violate_bandwidth(thread_with_ed)) {
             thread_with_ed->current_deadline = current_time + thread_with_ed->period;
             thread_with_ed->cbs.remaining_budget = thread_with_ed->cbs.budget;
-            __edf_select_thread_and_store_result(r, run_queue, release_queue, current_time);
+            __edf_select_thread_and_store_result(r);
         }
         else {
             r->scheduled_thread_list_member = &thread_with_ed->thread_list;
-            r->allocated_time = __edf_compute_time_to_be_allocated(run_queue, release_queue, thread_with_ed, current_time);
+            r->allocated_time = __edf_compute_time_to_be_allocated(thread_with_ed);
             if (r->allocated_time < 0)
                 ERR_EXIT("[EDF] Negative allocated time\n");
         }
     }
     else { // handle the case where run queue is empty
         r->scheduled_thread_list_member = run_queue;
-        r->allocated_time = get_sleeping_time(release_queue, current_time);
+        r->allocated_time = get_sleeping_time();
         if (r->allocated_time < 0)
             ERR_EXIT("[EDF] Negative sleeping time\n");
     }
@@ -286,16 +304,17 @@ void __edf_select_thread_and_store_result(struct threads_sched_result *r, struct
 
 //  EDF_CBS scheduler
 struct threads_sched_result schedule_edf_cbs(struct threads_sched_args args) {
+    set_global_args(args);
     struct threads_sched_result r;
     // notify the throttle task
-    list_for_each_entry(th, args.run_queue, thread_list) {
+    list_for_each_entry(th, run_queue, thread_list) {
         if (th->cbs.remaining_budget <= 0 && th->remaining_time > 0)
             th->cbs.is_throttled = true;
     }
 
     // first check if there is any thread has missed its current deadline
     struct thread *thread_missing_deadline = NULL;
-    while ((thread_missing_deadline = __check_deadline_miss(args.run_queue, args.current_time)) != NULL) {
+    while ((thread_missing_deadline = __check_deadline_miss()) != NULL) {
         if (thread_missing_deadline->cbs.is_hard_rt) {
             list_del(&thread_missing_deadline->thread_list);
             r.scheduled_thread_list_member = &thread_missing_deadline->thread_list;
@@ -309,7 +328,7 @@ struct threads_sched_result schedule_edf_cbs(struct threads_sched_args args) {
         }
     }
 
-    __edf_select_thread_and_store_result(&r, args.run_queue, args.release_queue, args.current_time);
+    __edf_select_thread_and_store_result(&r);
     return r;
 }
 #endif
