@@ -14,12 +14,6 @@
 #define EXIT_FAILURE 1
 #define P_RR_MAX_PRIORITY 4
 
-// #define THREAD_SCHEDULER_DEFAULT
-// #define THREAD_SCHEDULER_HRRN
-// #define THREAD_SCHEDULER_PRIORITY_RR
-// #define THREAD_SCHEDULER_DM
-// #define THREAD_SCHEDULER_EDF_CBS
-
 #define min(a, b) (((a) < (b))? (a): (b))
 
 typedef int bool;
@@ -59,12 +53,14 @@ int get_waiting_time(struct thread *t) {
 }
 
 int get_sleeping_time() {
-    if (list_empty(release_queue))
-        ERR_EXIT("Release queue is empty\n");
     int min_release_time = INT_MAX;
+    list_for_each_entry(th, run_queue, thread_list) {
+        if (th->is_real_time && th->cbs.is_throttled)
+            min_release_time = min(min_release_time, th->current_deadline);
+    }
     list_for_each_entry(entry, release_queue, thread_list)
         min_release_time = min(min_release_time, entry->release_time);
-    return min_release_time - current_time;
+    return (min_release_time == INT_MAX)? 1: min_release_time - current_time;
 }
 
 int get_time_until_release(struct release_queue_entry *entry) {
