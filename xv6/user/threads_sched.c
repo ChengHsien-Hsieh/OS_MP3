@@ -24,6 +24,17 @@
 
 typedef int bool;
 
+#ifdef THREAD_SCHEDULER_PRIORITY_RR
+struct priority_queue_entry {
+    struct thread *thread;
+    struct list_head thread_list;
+};
+#endif
+
+/* Iterators */
+struct thread *th = NULL;
+struct release_queue_entry *entry = NULL;
+
 /* Helper functions */
 static inline void ERR_EXIT(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -38,7 +49,6 @@ int get_sleeping_time(struct list_head *release_queue, int current_time) {
     if (list_empty(release_queue))
         ERR_EXIT("Release queue is empty\n");
     int min_release_time = INT_MAX;
-    struct release_queue_entry *entry = NULL;
     list_for_each_entry(entry, release_queue, thread_list)
         min_release_time = min(min_release_time, entry->release_time);
     return min_release_time - current_time;
@@ -49,7 +59,6 @@ int get_sleeping_time(struct list_head *release_queue, int current_time) {
 #ifdef THREAD_SCHEDULER_DEFAULT
 struct threads_sched_result schedule_default(struct threads_sched_args args) {
     struct thread *thread_with_smallest_id = NULL;
-    struct thread *th = NULL;
     list_for_each_entry(th, args.run_queue, thread_list) {
         if (thread_with_smallest_id == NULL || th->ID < thread_with_smallest_id->ID)
             thread_with_smallest_id = th;
@@ -88,7 +97,6 @@ static int __hrrn_thread_cmp(struct thread *a, struct thread *b, int current_tim
 
 struct threads_sched_result schedule_hrrn(struct threads_sched_args args) {
     struct thread *thread_with_hrr = NULL;
-    struct thread *th = NULL;
     list_for_each_entry(th, args.run_queue, thread_list) {
         if (thread_with_hrr == NULL || __hrrn_thread_cmp(th, thread_with_hrr, args.current_time) == 1)
             thread_with_hrr = th;
@@ -109,11 +117,6 @@ struct threads_sched_result schedule_hrrn(struct threads_sched_args args) {
 
 // Priority Round-Robin(P-RR)
 #ifdef THREAD_SCHEDULER_PRIORITY_RR
-struct priority_queue_entry {
-    struct thread *thread;
-    struct list_head thread_list;
-};
-
 void __rr_priority_queue_add(struct list_head *priority_queue, struct thread *t) {
     struct priority_queue_entry *new_entry = (struct priority_queue_entry *)malloc(sizeof(struct priority_queue_entry));
     new_entry->thread = t;
@@ -125,7 +128,6 @@ struct threads_sched_result schedule_priority_rr(struct threads_sched_args args)
     for (int i = 0; i <= P_RR_MAX_PRIORITY; i++)
         INIT_LIST_HEAD(&priority_queue[i]);
     
-    struct thread *th = NULL;
     list_for_each_entry(th, args.run_queue, thread_list) {
         if (th->priority < 0 || th->priority > P_RR_MAX_PRIORITY)
             ERR_EXIT("[P-RR] Thread priority is out of range\n");
@@ -162,7 +164,6 @@ struct threads_sched_result schedule_priority_rr(struct threads_sched_args args)
 #if defined(THREAD_SCHEDULER_EDF_CBS) || defined(THREAD_SCHEDULER_DM)
 static struct thread *__check_deadline_miss(struct list_head *run_queue, int current_time) {
     struct thread *thread_missing_deadline = NULL;
-    struct thread *th = NULL;
     list_for_each_entry(th, run_queue, thread_list) {
         if (th->current_deadline <= current_time && (thread_missing_deadline == NULL || th->ID < thread_missing_deadline->ID))
                 thread_missing_deadline = th;
@@ -186,7 +187,6 @@ static int __dm_thread_cmp(struct thread *a, struct thread *b) {
 
 int __dm_compute_time_to_be_allocated(struct list_head *release_queue, struct thread *t, int current_time) {
     int time_to_be_allocated = min(t->remaining_time, t->current_deadline - current_time);
-    struct release_queue_entry *entry = NULL;
     list_for_each_entry(entry, release_queue, thread_list) {
         if (__dm_thread_cmp(entry->thrd, t) == 1)
             time_to_be_allocated = min(time_to_be_allocated, entry->release_time - current_time);
@@ -204,7 +204,6 @@ struct threads_sched_result schedule_dm(struct threads_sched_args args) {
     }
     else {
         struct thread *thread_with_shortest_deadline = NULL;
-        struct thread *th = NULL;
         list_for_each_entry(th, args.run_queue, thread_list) {
             if (thread_with_shortest_deadline == NULL || __dm_thread_cmp(th, thread_with_shortest_deadline) == 1)
                 thread_with_shortest_deadline = th;
@@ -246,12 +245,10 @@ static bool __edf_violate_bandwidth(struct thread *t, int current_time) {
 
 int __edf_compute_time_to_be_allocated(struct list_head *run_queue, struct list_head *release_queue, struct thread *t, int current_time) {
     int time_to_be_allocated = min(min(t->cbs.remaining_budget, t->remaining_time), t->current_deadline - current_time);
-    struct thread *th = NULL;
     list_for_each_entry(th, run_queue, thread_list) {
         if (th->cbs.is_throttled && __edf_thread_cmp(th, t) == 1)
             time_to_be_allocated = min(time_to_be_allocated, th->current_deadline - current_time);
     }
-    struct release_queue_entry *entry = NULL;
     list_for_each_entry(entry, release_queue, thread_list) {
         if (__edf_thread_cmp(entry->thrd, t) == 1)
             time_to_be_allocated = min(time_to_be_allocated, entry->release_time - current_time);
@@ -261,7 +258,6 @@ int __edf_compute_time_to_be_allocated(struct list_head *run_queue, struct list_
 
 void __edf_select_thread_and_store_result(struct threads_sched_result *r, struct list_head *run_queue, struct list_head *release_queue, int current_time) {
     struct thread *thread_with_ed = NULL;
-    struct thread *th = NULL;
     list_for_each_entry(th, run_queue, thread_list) {
         if (!th->cbs.is_throttled && (thread_with_ed == NULL || __edf_thread_cmp(th, thread_with_ed) == 1))
             thread_with_ed = th;
@@ -292,7 +288,6 @@ void __edf_select_thread_and_store_result(struct threads_sched_result *r, struct
 struct threads_sched_result schedule_edf_cbs(struct threads_sched_args args) {
     struct threads_sched_result r;
     // notify the throttle task
-    struct thread *th = NULL;
     list_for_each_entry(th, args.run_queue, thread_list) {
         if (th->cbs.remaining_budget <= 0 && th->remaining_time > 0)
             th->cbs.is_throttled = true;
