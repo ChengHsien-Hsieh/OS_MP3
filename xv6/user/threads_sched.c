@@ -54,7 +54,7 @@ void set_global_args(struct threads_sched_args args) {
     release_queue = args.release_queue;
 }
 
-int get_waiting_time(struct thread *t, int current_time) {
+int get_waiting_time(struct thread *t) {
     return current_time - t->arrival_time;
 }
 
@@ -65,6 +65,14 @@ int get_sleeping_time() {
     list_for_each_entry(entry, release_queue, thread_list)
         min_release_time = min(min_release_time, entry->release_time);
     return min_release_time - current_time;
+}
+
+int get_time_until_release(struct release_queue_entry *entry) {
+    return entry->release_time - current_time;
+}
+
+int get_time_until_deadline(struct thread *t) {
+    return t->current_deadline - current_time;
 }
  
 /* Scheduling algorithm */
@@ -99,9 +107,8 @@ struct threads_sched_result schedule_default(struct threads_sched_args args) {
 static int __hrrn_thread_cmp(struct thread *a, struct thread *b) {
     if (a == NULL || b == NULL)
         ERR_EXIT("[HRRN] Compare NULL threads\n");
-
-    int a_priority = (get_waiting_time(a, current_time) + a->processing_time) * b->processing_time;
-    int b_priority = (get_waiting_time(b, current_time) + b->processing_time) * a->processing_time;
+    int a_priority = (get_waiting_time(a) + a->processing_time) * b->processing_time;
+    int b_priority = (get_waiting_time(b) + b->processing_time) * a->processing_time;
     if (a_priority < b_priority || (a_priority == b_priority && a->ID > b->ID))
         return -1;
     else if (a_priority == b_priority && a->ID == b->ID)
@@ -169,7 +176,7 @@ struct threads_sched_result schedule_priority_rr(struct threads_sched_args args)
         return r;
     }
 
-    /* No thread in the run_queue */
+    /* No threads in the run_queue */
     r.scheduled_thread_list_member = run_queue;
     r.allocated_time = 1;
     return r;
@@ -206,7 +213,7 @@ int __dm_compute_time_to_be_allocated(struct thread *t) {
     int time_to_be_allocated = min(t->remaining_time, t->current_deadline - current_time);
     list_for_each_entry(entry, release_queue, thread_list) {
         if (__dm_thread_cmp(entry->thrd, t) == 1)
-            time_to_be_allocated = min(time_to_be_allocated, entry->release_time - current_time);
+            time_to_be_allocated = min(time_to_be_allocated, get_time_until_release(entry));
     }
     return time_to_be_allocated;
 }
@@ -258,18 +265,18 @@ static int __edf_thread_cmp(struct thread *a, struct thread *b) {
 static bool __edf_violate_bandwidth(struct thread *t) {
     if (t == NULL)
         ERR_EXIT("[EDF] Check NULL thread\n");
-    return t->cbs.remaining_budget * t->period > t->cbs.budget * (t->current_deadline - current_time);
+    return t->cbs.remaining_budget * t->period > t->cbs.budget * get_time_until_deadline(t);
 }
 
 int __edf_compute_time_to_be_allocated(struct thread *t) {
-    int time_to_be_allocated = min(min(t->cbs.remaining_budget, t->remaining_time), t->current_deadline - current_time);
+    int time_to_be_allocated = min(min(t->cbs.remaining_budget, t->remaining_time), get_time_until_deadline(t));
     list_for_each_entry(th, run_queue, thread_list) {
         if (th->cbs.is_throttled && __edf_thread_cmp(th, t) == 1)
-            time_to_be_allocated = min(time_to_be_allocated, th->current_deadline - current_time);
+            time_to_be_allocated = min(time_to_be_allocated, get_time_until_deadline(th));
     }
     list_for_each_entry(entry, release_queue, thread_list) {
         if (__edf_thread_cmp(entry->thrd, t) == 1)
-            time_to_be_allocated = min(time_to_be_allocated, entry->release_time - current_time);
+            time_to_be_allocated = min(time_to_be_allocated, get_time_until_release(entry));
     }
     return time_to_be_allocated;
 }
